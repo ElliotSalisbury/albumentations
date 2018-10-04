@@ -1,8 +1,8 @@
 import random
-
+import numpy as np
 import cv2
 
-__all__ = ['to_tuple', 'BasicTransform', 'DualTransform', 'ImageOnlyTransform', 'NoOp']
+__all__ = ['to_tuple', 'BasicTransform', 'DualTransform', 'ImageOnlyTransform']
 
 
 def to_tuple(param, low=None):
@@ -49,7 +49,7 @@ class BasicTransform(object):
 
     @property
     def target_dependence(self):
-        return {}
+        return {'bboxes': ['image',]}
 
 
 class DualTransform(BasicTransform):
@@ -59,12 +59,58 @@ class DualTransform(BasicTransform):
     def targets(self):
         return {'image': self.apply, 'mask': self.apply_to_mask, 'bboxes': self.apply_to_bboxes}
 
+    def apply_to_bboxes_generic(self, bboxes, image, **params):
+        new_bboxes = []
+
+        # TODO we can reduce the number of times self.apply is ran by drawing multiple bboxs per mask
+        # if len(bboxes) > 255:
+        #     raise NotImplementedError
+
+        for i, bbox in enumerate(bboxes):
+            mask = np.zeros((image.shape[0], image.shape[1], 1), dtype=np.uint8)
+
+            # generate a mask using the bbox at the same size as the image
+            p1 = (int(image.shape[1] * bbox[0]), int(image.shape[0] * bbox[1]))
+            p2 = (int(image.shape[1] * bbox[2]), int(image.shape[0] * bbox[3]))
+            cv2.rectangle(mask, p1, p2, (255), -1)
+
+            # apply the operation
+            mask = self.apply(mask, **{k: cv2.INTER_NEAREST if k == 'interpolation' else v for k, v in params.items()})
+
+        # for i, bbox in enumerate(bboxes):
+        #     thresh = cv2.inRange(mask, i+1, i+1)
+            # detect the box (or now maybe multiple) in the new image
+            _, contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+            # add new boxes to return list
+            applied_bboxes = []
+            for c in contours:
+                rect = cv2.boundingRect(c)
+                rect = [rect[0] / mask.shape[1],
+                        rect[1] / mask.shape[0],
+                        (rect[0] + rect[2]) / mask.shape[1],
+                        (rect[1] + rect[3]) / mask.shape[0],
+                        bbox[4]
+                        ]
+                applied_bboxes.append(rect)
+
+            new_bboxes.extend(applied_bboxes)
+        return new_bboxes
+
     def apply_to_bbox(self, bbox, **params):
         raise NotImplementedError
 
     def apply_to_bboxes(self, bboxes, **params):
         bboxes = [list(bbox) for bbox in bboxes]
-        return [self.apply_to_bbox(bbox[:4], **params) + bbox[4:] for bbox in bboxes]
+        image = params.pop('image', None)
+        try:
+            return [self.apply_to_bbox(bbox[:4], **params) + bbox[4:] for bbox in bboxes]
+        except NotImplementedError as e:
+            if image is not None:
+                return self.apply_to_bboxes_generic(bboxes, image, **params)
+            else:
+                raise e
+
 
     def apply_to_mask(self, img, **params):
         return self.apply(img, **{k: cv2.INTER_NEAREST if k == 'interpolation' else v for k, v in params.items()})

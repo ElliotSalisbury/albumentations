@@ -62,39 +62,44 @@ class DualTransform(BasicTransform):
     def apply_to_bboxes_generic(self, bboxes, image, **params):
         new_bboxes = []
 
-        # TODO we can reduce the number of times self.apply is ran by drawing multiple bboxs per mask
-        # if len(bboxes) > 255:
-        #     raise NotImplementedError
+        def box_split(bboxes, size):
+            # looping till length l
+            for i in range(0, len(bboxes), size):
+                yield bboxes[i:i + size]
 
-        for i, bbox in enumerate(bboxes):
+        split_bboxes = box_split(bboxes, 8)
+        for bboxes8 in split_bboxes:
             mask = np.zeros((image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            for i, bbox in enumerate(bboxes8):
+                single_mask = np.zeros((image.shape[0], image.shape[1], 1), dtype=np.uint8)
 
-            # generate a mask using the bbox at the same size as the image
-            p1 = (int(image.shape[1] * bbox[0]), int(image.shape[0] * bbox[1]))
-            p2 = (int(image.shape[1] * bbox[2]), int(image.shape[0] * bbox[3]))
-            cv2.rectangle(mask, p1, p2, (255), -1)
+                # generate a mask using the bbox at the same size as the image
+                p1 = (int(image.shape[1] * bbox[0]), int(image.shape[0] * bbox[1]))
+                p2 = (int(image.shape[1] * bbox[2]), int(image.shape[0] * bbox[3]))
+                cv2.rectangle(mask, p1, p2, (1<<i), -1)
+
+                mask = np.bitwise_or(mask, single_mask)
 
             # apply the operation
             mask = self.apply(mask, **{k: cv2.INTER_NEAREST if k == 'interpolation' else v for k, v in params.items()})
 
-        # for i, bbox in enumerate(bboxes):
-        #     thresh = cv2.inRange(mask, i+1, i+1)
-            # detect the box (or now maybe multiple) in the new image
-            _, contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            for i, bbox in enumerate(bboxes8):
+                color = 1<<i
+                thresh = np.bitwise_and(mask, color)
 
-            # add new boxes to return list
-            applied_bboxes = []
-            for c in contours:
-                rect = cv2.boundingRect(c)
-                rect = [rect[0] / mask.shape[1],
-                        rect[1] / mask.shape[0],
-                        (rect[0] + rect[2]) / mask.shape[1],
-                        (rect[1] + rect[3]) / mask.shape[0],
-                        bbox[4]
-                        ]
-                applied_bboxes.append(rect)
+                # detect the box (or now maybe multiple) in the new image
+                _, contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-            new_bboxes.extend(applied_bboxes)
+                # add new boxes to return list
+                for c in contours:
+                    rect = cv2.boundingRect(c)
+                    rect = [rect[0] / mask.shape[1],
+                            rect[1] / mask.shape[0],
+                            (rect[0] + rect[2]) / mask.shape[1],
+                            (rect[1] + rect[3]) / mask.shape[0],
+                            bbox[4]
+                            ]
+                    new_bboxes.append(rect)
         return new_bboxes
 
     def apply_to_bbox(self, bbox, **params):
